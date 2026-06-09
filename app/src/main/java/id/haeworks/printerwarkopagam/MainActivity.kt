@@ -1,12 +1,16 @@
 package id.haeworks.printerwarkopagam
 
 import android.app.ActivityManager
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -19,19 +23,24 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -44,24 +53,15 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.repeatOnLifecycle
 import id.haeworks.printerwarkopagam.ui.theme.PrinterWarkopAgamAjwaTheme
-import java.net.NetworkInterface
-import java.util.Collections
-import java.net.InetSocketAddress
-import java.net.Socket
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.withContext
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.runtime.rememberCoroutineScope
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.net.InetSocketAddress
+import java.net.NetworkInterface
+import java.net.Socket
+import java.util.Collections
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -84,6 +84,11 @@ fun PrintProxyScreen(modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val coroutineScope = rememberCoroutineScope()
+
+    val sharedPref = remember { context.getSharedPreferences("PrintProxyPrefs", Context.MODE_PRIVATE) }
+    var showAutoStartDialog by remember {
+        mutableStateOf(sharedPref.getBoolean("is_first_launch", true))
+    }
 
     var isServerRunning by remember {
         mutableStateOf(isServiceRunning(context, PrintProxyService::class.java))
@@ -266,6 +271,38 @@ fun PrintProxyScreen(modifier: Modifier = Modifier) {
                 Text("STOP SERVER PROXY", color = Color.White, fontWeight = FontWeight.Bold)
             }
         }
+
+        if (showAutoStartDialog) {
+            AlertDialog(
+                onDismissRequest = { /* Mencegah dialog ditutup tanpa aksi */ },
+                title = { Text(text = "Aktifkan Auto-Start Layanan Printer Dapur") },
+                text = {
+                    Text("Agar printer proxy dapat langsung bekerja otomatis saat tablet dinyalakan (tanpa perlu membuka aplikasi ini manual di pagi hari), mohon aktifkan izin 'Auto Start' atau 'Mulai Otomatis' untuk aplikasi ini.")
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            // Buka halaman pengaturan sistem
+                            openAutoStartSettings(context)
+                            // Simpan status agar dialog tidak muncul lagi di masa mendatang
+                            sharedPref.edit().putBoolean("is_first_launch", false).apply()
+                            showAutoStartDialog = false
+                        }
+                    ) {
+                        Text("Buka Pengaturan")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = {
+                        sharedPref.edit().putBoolean("is_first_launch", false).apply()
+                        showAutoStartDialog = false
+                    }) {
+                        Text("Nanti Saja", color = Color.Gray)
+                    }
+                }
+            )
+        }
+
     }
 }
 
@@ -343,4 +380,44 @@ suspend fun scanLocalPrinters(tabletIp: String, onProgress: (Int) -> Unit): List
     }
 
     return@withContext printerList
+}
+
+fun openAutoStartSettings(context: Context) {
+    val intents = arrayOf(
+        Intent().setComponent(ComponentName("com.miui.securitycenter", "com.miui.permcenter.autostart.AutoStartManagementActivity")),
+        Intent().setComponent(ComponentName("com.letv.android.letvsafe", "com.letv.android.letvsafe.AutobootManageActivity")),
+        Intent().setComponent(ComponentName("com.huawei.systemmanager", "com.huawei.systemmanager.optimize.process.ProtectActivity")),
+        Intent().setComponent(ComponentName("com.huawei.systemmanager", "com.huawei.systemmanager.appcontrol.activity.StartupAppControlActivity")),
+        Intent().setComponent(ComponentName("com.coloros.safecenter", "com.coloros.safecenter.permission.startup.StartupAppListActivity")),
+        Intent().setComponent(ComponentName("com.coloros.safecenter", "com.coloros.safecenter.startupapp.StartupAppListActivity")),
+        Intent().setComponent(ComponentName("com.oppo.safe", "com.oppo.safe.permission.startup.StartupAppListActivity")),
+        Intent().setComponent(ComponentName("com.iqoo.secure", "com.iqoo.secure.ui.phoneoptimize.BgStartUpManager")),
+        Intent().setComponent(ComponentName("com.vivo.permissionmanager", "com.vivo.permissionmanager.activity.BgStartUpManagerActivity")),
+        Intent().setComponent(ComponentName("com.samsung.android.lool", "com.samsung.android.sm.ui.battery.BatteryActivity")),
+        Intent().setComponent(ComponentName("com.htc.pitroad", "com.htc.pitroad.MainActivity")),
+        Intent().setComponent(ComponentName("com.asus.mobilemanager", "com.asus.mobilemanager.autostart.AutoStartActivity"))
+    )
+
+    var openedSuccessfully = false
+    for (intent in intents) {
+        try {
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            context.startActivity(intent)
+            openedSuccessfully = true
+            break
+        } catch (e: Exception) {
+            // Coba intent berikutnya jika intent saat ini tidak cocok dengan OS tablet
+        }
+    }
+
+    // Jika merek OS tidak terdaftar di atas, lempar ke halaman detail aplikasi standar
+    if (!openedSuccessfully) {
+        try {
+            val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                data = Uri.fromParts("package", context.packageName, null)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(intent)
+        } catch (_: Exception) {}
+    }
 }
