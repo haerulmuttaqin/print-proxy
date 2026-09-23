@@ -1,15 +1,21 @@
 package id.haeworks.printerwarkopagam
 
+import android.Manifest
 import android.app.ActivityManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
 import android.provider.Settings
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -32,6 +38,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -46,11 +53,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
 import id.haeworks.printerwarkopagam.ui.theme.PrinterWarkopAgamAjwaTheme
 import kotlinx.coroutines.Dispatchers
@@ -93,31 +101,45 @@ fun PrintProxyScreen(modifier: Modifier = Modifier) {
     var isServerRunning by remember {
         mutableStateOf(isServiceRunning(context, PrintProxyService::class.java))
     }
+    var isBatteryOptIgnored by remember {
+        mutableStateOf(isIgnoringBatteryOptimizations(context))
+    }
     var tabletIpAddress by remember { mutableStateOf(getLocalIpAddress()) }
 
     var isScanning by remember { mutableStateOf(false) }
     var scanProgress by remember { mutableStateOf(0) }
     var foundPrinters by remember { mutableStateOf(listOf<String>()) }
 
-    LaunchedEffect(lifecycleOwner.lifecycle) {
-        lifecycleOwner.repeatOnLifecycle(Lifecycle.State.RESUMED) {
-            isServerRunning = isServiceRunning(context, PrintProxyService::class.java)
-            tabletIpAddress = getLocalIpAddress()
+    // Launcher izin notifikasi untuk Android 13+ (Tiramisu / API 33+)
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission(),
+        onResult = { /* tangani izin notifikasi */ }
+    )
+
+    LaunchedEffect(Unit) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
         }
     }
 
-    // Efek otomatisasi saat aplikasi dibuka atau kembali ke depan (Resume)
+    // Efek otomatisasi dan pembaruan status saat aplikasi dibuka atau di-resume
     LaunchedEffect(lifecycleOwner.lifecycle) {
         lifecycleOwner.repeatOnLifecycle(Lifecycle.State.RESUMED) {
-            // 1. Cek status server terkini
             val runningStatus = isServiceRunning(context, PrintProxyService::class.java)
             isServerRunning = runningStatus
+            isBatteryOptIgnored = isIgnoringBatteryOptimizations(context)
             tabletIpAddress = getLocalIpAddress()
 
-            // 2. OTOMATISASI: Jika server ternyata MATI, langsung jalankan otomatis!
+            // Jika server MATI saat aplikasi dibuka, langsung hidupkan otomatis
             if (!runningStatus) {
                 val intent = Intent(context, PrintProxyService::class.java)
-                context.startForegroundService(intent)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(intent)
+                } else {
+                    context.startService(intent)
+                }
                 isServerRunning = true
             }
         }
@@ -160,7 +182,64 @@ fun PrintProxyScreen(modifier: Modifier = Modifier) {
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            // --- SEKSI SCANNER PRINTER (FITUR BARU) ---
+            // --- SEKSI KETAHANAN LATAR BELAKANG & BATERAI ---
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = if (isBatteryOptIgnored) Color(0xFFF1F8E9) else Color(0xFFFFF3E0)
+                ),
+                border = androidx.compose.foundation.BorderStroke(
+                    1.dp,
+                    if (isBatteryOptIgnored) Color(0xFF81C784) else Color(0xFFFFB74D)
+                )
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        text = "Ketahanan Latar Belakang (Standby)",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.sp
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+
+                    if (isBatteryOptIgnored) {
+                        Text(
+                            text = "✅ Optimasi Baterai: Tidak Dibatasi (Aman dari Doze Mode saat layar mati)",
+                            fontSize = 12.sp,
+                            color = Color(0xFF2E7D32)
+                        )
+                    } else {
+                        Text(
+                            text = "⚠️ Perhatian: Optimasi baterai masih aktif. Tablet dapat mematikan proxy saat layar mati/standby.",
+                            fontSize = 12.sp,
+                            color = Color(0xFFE65100)
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Button(
+                            onClick = {
+                                requestIgnoreBatteryOptimizations(context)
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEF6C00)),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("NONAKTIFKAN OPTIMASI BATERAI", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+                    OutlinedButton(
+                        onClick = {
+                            openAutoStartSettings(context)
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Buka Pengaturan Auto-Start (OEM)", fontSize = 12.sp)
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // --- SEKSI SCANNER PRINTER ---
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.background),
@@ -201,7 +280,6 @@ fun PrintProxyScreen(modifier: Modifier = Modifier) {
                             Text(text = "Printer Ditemukan (Port 9100):", fontWeight = FontWeight.SemiBold, fontSize = 12.sp, color = Color.Gray)
                             Spacer(modifier = Modifier.height(8.dp))
 
-                            // Menampilkan list IP Printer
                             foundPrinters.forEach { ip ->
                                 Card(
                                     colors = CardDefaults.cardColors(containerColor = Color(0xFFE0F7FA)),
@@ -246,7 +324,11 @@ fun PrintProxyScreen(modifier: Modifier = Modifier) {
             Button(
                 onClick = {
                     val intent = Intent(context, PrintProxyService::class.java)
-                    context.startForegroundService(intent)
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        context.startForegroundService(intent)
+                    } else {
+                        context.startService(intent)
+                    }
                     isServerRunning = true
                 },
                 enabled = !isServerRunning,
@@ -275,16 +357,15 @@ fun PrintProxyScreen(modifier: Modifier = Modifier) {
         if (showAutoStartDialog) {
             AlertDialog(
                 onDismissRequest = { /* Mencegah dialog ditutup tanpa aksi */ },
-                title = { Text(text = "Aktifkan Auto-Start Layanan Printer Dapur") },
+                title = { Text(text = "Aktifkan Auto-Start & Bebas Baterai") },
                 text = {
-                    Text("Agar printer proxy dapat langsung bekerja otomatis saat tablet dinyalakan (tanpa perlu membuka aplikasi ini manual di pagi hari), mohon aktifkan izin 'Auto Start' atau 'Mulai Otomatis' untuk aplikasi ini.")
+                    Text("Agar printer proxy dapat langsung bekerja otomatis saat tablet dinyalakan dan tidak terputus saat layar tablet mati, mohon izinkan 'Abaikan Optimasi Baterai' dan 'Auto Start' untuk aplikasi ini.")
                 },
                 confirmButton = {
                     TextButton(
                         onClick = {
-                            // Buka halaman pengaturan sistem
+                            requestIgnoreBatteryOptimizations(context)
                             openAutoStartSettings(context)
-                            // Simpan status agar dialog tidak muncul lagi di masa mendatang
                             sharedPref.edit().putBoolean("is_first_launch", false).apply()
                             showAutoStartDialog = false
                         }
@@ -306,6 +387,34 @@ fun PrintProxyScreen(modifier: Modifier = Modifier) {
     }
 }
 
+fun isIgnoringBatteryOptimizations(context: Context): Boolean {
+    val powerManager = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+    return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+        powerManager?.isIgnoringBatteryOptimizations(context.packageName) == true
+    } else {
+        true
+    }
+}
+
+fun requestIgnoreBatteryOptimizations(context: Context) {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+        try {
+            val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                data = Uri.parse("package:${context.packageName}")
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(intent)
+        } catch (_: Exception) {
+            try {
+                val intent = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(intent)
+            } catch (_: Exception) {}
+        }
+    }
+}
+
 fun getLocalIpAddress(): String {
     try {
         val interfaces = Collections.list(NetworkInterface.getNetworkInterfaces())
@@ -314,9 +423,9 @@ fun getLocalIpAddress(): String {
             for (address in addresses) {
                 if (!address.isLoopbackAddress) {
                     val sAddr = address.hostAddress
-                    val isIPv4 = sAddr.indexOf(':') < 0
+                    val isIPv4 = sAddr != null && !sAddr.contains(':')
                     if (isIPv4) {
-                        return sAddr
+                        return sAddr!!
                     }
                 }
             }
@@ -326,7 +435,6 @@ fun getLocalIpAddress(): String {
     }
     return "Tidak Tersambung Wi-Fi"
 }
-
 
 fun isServiceRunning(context: Context, serviceClass: Class<*>): Boolean {
     val manager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
@@ -350,9 +458,6 @@ suspend fun scanLocalPrinters(tabletIp: String, onProgress: (Int) -> Unit): List
     if (parts.size != 4) return@withContext emptyList<String>()
 
     val prt = 9100
-
-    // Pola Jaringan Kelas A / Enterprise (Misal: 10.x.x.x)
-    // Kita akan scan 254 host di segmen ketiga dan keempat yang paling dekat dengan IP Tablet
     val baseSubnet = "${parts[0]}.${parts[1]}.${parts[2]}."
 
     val deferredScans = (1..254).map { host ->
@@ -362,7 +467,6 @@ suspend fun scanLocalPrinters(tabletIp: String, onProgress: (Int) -> Unit): List
 
             try {
                 Socket().use { socket ->
-                    // Timeout dinaikkan sedikit ke 500ms karena jaringan 10.x.x.x biasanya memiliki routing yang lebih panjang
                     socket.connect(InetSocketAddress(targetIp, prt), 500)
                     targetIp
                 }
